@@ -1,50 +1,53 @@
 #!/bin/bash
 
-# Authorized PHP File Scanner for Pentesting
-# Usage: ./php_file_scanner.sh <target_url>
-#!/usr/bin/env bash
-while true;
-do
+LOGFILE="/tmp/backdoor_alert.log"
+ALERT=false
 
-TARGET="$1"
-USER_AGENT="Mozilla/5.0 (X11; Linux x86_64; rv:91.0) Gecko/20100101 Firefox/91.0"
-#DIRLIST="/usr/share/wordlists/dirb/common.txt"  # Default wordlist (Kali Linux)
-OUTPUT="php_files_found.txt"
+# Limpa o log anterior
+> "$LOGFILE"
 
-read -p "Dgite o diretorio da wordlist: " DIRLIST
-
-echo "[+] Scanning $TARGET for .php files..."
-echo "[+] Output will be saved to: $OUTPUT"
-echo ""
-
-# Check if curl/wget exists
-if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
-    echo "[!] Error: Install 'curl' or 'wget' first."
-    exit 1
-fi
-
-# Check if wordlist exists
-if [ ! -f "$DIRLIST" ]; then
-    echo "[!] Error: Wordlist not found at $DIRLIST"
-    echo "[!] Try: sudo apt install wordlists (Kali Linux)"
-    exit 1
-fi
-
-# Scan function
-scan_php_files()
-{
-    while read -r dir; do
-        url="$TARGET/$dir.php"
-        if curl -s -A "$USER_AGENT" -o /dev/null -w "%{http_code}" "$url" | grep -q "200"; then
-            echo "[+] Found: $url"
-            echo "$url" >> "$OUTPUT"
-        fi
-    done < "$DIRLIST"
+check() {
+    echo "[*] $1" >> "$LOGFILE"
+    eval "$2" >> "$LOGFILE"
+    if [ $? -eq 0 ]; then
+        ALERT=true
+    fi
 }
 
-# Start scan
-scan_php_files
+# 1. Conexões de rede suspeitas
+check "Conexões de rede suspeitas:" \
+"ss -tulpan | grep -vE '127.0.0.1|::1|0.0.0.0:22|LISTEN' | grep -v 'chrome\|firefox'"
 
-echo ""
-echo "[!] Scan completed. Results saved to $OUTPUT."
-done
+# 2. Arquivos com nomes incomuns
+check "Arquivos suspeitos com extensões estranhas:" \
+"find / -type f -regextype posix-extended -regex '.*\.[a-zA-Z]{8,}$' 2>/dev/null | head -n 10"
+
+# 3. Processos de caminhos suspeitos
+check "Processos em diretórios não convencionais:" \
+"ps aux | awk '\$11 !~ \"^/usr/bin|^/bin|^/sbin\"' | grep -vE '^\[' | head -n 10"
+
+# 4. Executáveis com setuid/setgid
+check "Executáveis com setuid/setgid:" \
+"find / -perm /6000 -type f 2>/dev/null | head -n 10"
+
+# 5. Scripts em /tmp ou /dev/shm
+check "Scripts suspeitos em /tmp ou /dev/shm:" \
+"find /tmp /dev/shm -type f -exec file {} \; 2>/dev/null | grep -i 'script' | head -n 10"
+
+# 6. Mudanças recentes em arquivos sensíveis
+check "Arquivos modificados recentemente:" \
+"find /etc /bin /usr/bin /usr/sbin -type f -mtime -1 2>/dev/null | head -n 10"
+
+# 7. chkrootkit (opcional)
+if command -v chkrootkit >/dev/null 2>&1; then
+    check "chkrootkit detectou algo?" \
+    "chkrootkit | grep -v 'not found' | grep -v 'not infected'"
+fi
+
+# NOTIFICAÇÃO
+if [ "$ALERT" = true ]; then
+    echo "[!!!] POSSÍVEL BACKDOOR DETECTADO! Veja o relatório em: $LOGFILE"
+    # opcional: notificar por e-mail, telegram, notify-send, etc
+else
+    rm -f "$LOGFILE"  # limpa se nada suspeito for encontrado
+fi
